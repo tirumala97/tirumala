@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>21-Day Dialog Schedule Maker</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial; padding: 16px; max-width:900px; margin:auto; }
+    h1 { margin-top:0 }
+    table { width:100%; border-collapse:collapse; margin-top:12px }
+    th,td { border:1px solid #ddd; padding:6px; text-align:left; vertical-align:top }
+    pre { background:#f7f7f7; padding:8px; overflow:auto }
+    .controls { margin-top:12px; display:flex; gap:8px; flex-wrap:wrap }
+    input[type=text] { padding:6px; width:260px }
+    button { padding:8px 12px; cursor:pointer }
+    .danger { background:#fee; border:1px solid #f88 }
+  </style>
+</head>
+<body>
+  <h1>21-Day Dialog Schedule Maker</h1>
+  <p>This page uses dialog boxes to create a schedule for 21 days starting tomorrow. Each day must have tasks between 04:00 and 22:00. After data entry you'll get a summary and can export CSV or (optionally) create GitHub issues.</p>
+
+  <div class="controls">
+    <button id="startBtn">Start wizard (use dialog boxes)</button>
+    <button id="downloadCsvBtn" disabled>Download CSV</button>
+    <button id="resetBtn">Reset</button>
+  </div>
+
+  <section id="summary"></section>
+
+  <hr/>
+  <h3>Option: Create GitHub Issues (one issue per task)</h3>
+  <p>Enter target repo and a Personal Access Token with "repo" scope for private repos or "public_repo" for public repos. The token is sent directly from your browser to GitHub — do not share it.</p>
+  <div class="controls">
+    <input id="ghRepo" type="text" placeholder="owner/repo (e.g. tirumala97/my-repo)"/>
+    <input id="ghToken" type="text" placeholder="Paste Personal Access Token (not stored)"/>
+    <button id="createIssuesBtn" disabled>Create issues for all tasks</button>
+  </div>
+
+  <script>
+    (() => {
+      const minTime = "04:00";
+      const maxTime = "22:00";
+
+      function fmtDate(d) {
+        return d.toISOString().slice(0,10);
+      }
+      function addDays(d, n) {
+        const x = new Date(d);
+        x.setDate(x.getDate() + n);
+        return x;
+      }
+      function timeValid(t) {
+        if (!/^[0-2]\d:[0-5]\d$/.test(t)) return false;
+        return t >= minTime && t <= maxTime;
+      }
+
+      let schedule = []; // [{date: "YYYY-MM-DD", tasks: [{time,desc}]}]
+
+      const startBtn = document.getElementById('startBtn');
+      const downloadCsvBtn = document.getElementById('downloadCsvBtn');
+      const resetBtn = document.getElementById('resetBtn');
+      const summary = document.getElementById('summary');
+      const ghRepo = document.getElementById('ghRepo');
+      const ghToken = document.getElementById('ghToken');
+      const createIssuesBtn = document.getElementById('createIssuesBtn');
+
+      function renderSummary() {
+        if (schedule.length === 0) {
+          summary.innerHTML = "<p>No schedule yet. Click <strong>Start wizard</strong>.</p>";
+          downloadCsvBtn.disabled = true;
+          createIssuesBtn.disabled = true;
+          return;
+        }
+        let html = "<h2>Schedule summary (21 days)</h2>";
+        html += "<table><thead><tr><th>Date</th><th>Tasks (time — description)</th></tr></thead><tbody>";
+        schedule.forEach(day => {
+          const rows = day.tasks.map(t => `<div><strong>${t.time}</strong> — ${escapeHtml(t.desc)}</div>`).join("");
+          html += `<tr><td>${escapeHtml(day.date)}</td><td>${rows || "<em>No tasks</em>"}</td></tr>`;
+        });
+        html += "</tbody></table>";
+        html += `<p><strong>Wake:</strong> ${minTime} &nbsp; <strong>Sleep:</strong> ${maxTime}</p>`;
+        summary.innerHTML = html;
+        downloadCsvBtn.disabled = false;
+        createIssuesBtn.disabled = false;
+      }
+
+      function escapeHtml(s) {
+        return s.replace(/[&<>\"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      }
+
+      function downloadCSV() {
+        const rows = [["date","time","description"]];
+        schedule.forEach(d => {
+          d.tasks.forEach(t => rows.push([d.date, t.time, t.desc]));
+        });
+        const csv = rows.map(r => r.map(cell => `"${String(cell).replace(/"/g,'""')}"`).join(",")).join("\n");
+        const blob = new Blob([csv], {type: 'text/csv'});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `schedule_${fmtDate(addDays(new Date(),1))}_+21days.csv`;
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+
+      async function createGitHubIssues() {
+        const repo = ghRepo.value.trim();
+        const token = ghToken.value.trim();
+        if (!repo || !/^[^\\/]+\\/[^\\/]+$/.test(repo)) {
+          alert("Please enter repo in owner/repo format.");
+          return;
+        }
+        if (!token) {
+          if (!confirm("No token provided. You won't be able to create issues. Continue?")) return;
+        }
+        const [owner, name] = repo.split("/");
+        let created = 0;
+        for (const day of schedule) {
+          for (const t of day.tasks) {
+            const title = `Task — ${t.desc} (${day.date} ${t.time})`;
+            const body = `Scheduled task for ${day.date} at ${t.time}.\n\n**Description:** ${t.desc}\n\nCreated by Schedule Maker.`;
+            if (!token) continue;
+            try {
+              const res = await fetch(`https://api.github.com/repos/${owner}/${name}/issues`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': 'token ' + token
+                },
+                body: JSON.stringify({ title, body })
+              });
+              if (!res.ok) {
+                const txt = await res.text();
+                console.error('GitHub API error', res.status, txt);
+                alert(`GitHub API error ${res.status}. Check token/repo and console for details.`);
+                return;
+              } else {
+                created++;
+              }
+            } catch (e) {
+              console.error(e);
+              alert("Network error creating issues. See console.");
+              return;
+            }
+          }
+        }
+        alert(`Created ${created} issues (or attempted).`);
+      }
+
+      startBtn.addEventListener('click', () => {
+        schedule = [];
+        const today = new Date();
+        for (let i = 1; i <= 21; i++) {
+          const d = addDays(today, i);
+          const dateStr = fmtDate(d);
+          // Ask whether to create tasks for this day
+          const doDay = confirm(`Create tasks for ${dateStr}? (OK to create, Cancel to skip this day)`);
+          if (!doDay) {
+            schedule.push({date: dateStr, tasks: []});
+            continue;
+          }
+          let numStr = prompt(`How many tasks for ${dateStr}? Enter a number (0 to skip).`, "5");
+          if (numStr === null) { // user pressed cancel -> skip this day
+            schedule.push({date: dateStr, tasks: []});
+            continue;
+          }
+          let num = parseInt(numStr.trim() || "0", 10);
+          if (isNaN(num) || num < 0) num = 0;
+          const tasks = [];
+          for (let j = 0; j < num; j++) {
+            let time = prompt(`Task ${j+1}/${num} for ${dateStr} — enter time HH:MM (24h) between ${minTime} and ${maxTime}`, minTime);
+            if (time === null) break; // stop entering tasks for this day
+            time = time.trim();
+            if (!timeValid(time)) {
+              alert(`Invalid time. Must be HH:MM between ${minTime} and ${maxTime}. This task will be retried.`);
+              j--; // repeat
+              continue;
+            }
+            let desc = prompt(`Task ${j+1}/${num} on ${dateStr} at ${time} — enter description`, "");
+            if (desc === null) desc = "";
+            tasks.push({time, desc: desc.trim()});
+          }
+          // Option: quick-add common blocks
+          const more = confirm(`Would you like to quickly add a morning block for ${dateStr}? (adds Wake, Exercise, Breakfast)`);
+          if (more) {
+            // insert some defaults if not already present
+            const defaults = [
+              {time: "04:00", desc: "Wake up"},
+              {time: "04:30", desc: "Morning routine / Exercise"},
+              {time: "06:30", desc: "Breakfast"}
+            ];
+            defaults.forEach(def => {
+              // don't duplicate exact time
+              if (!tasks.some(t => t.time === def.time && t.desc === def.desc)) tasks.push(def);
+            });
+          }
+          schedule.push({date: dateStr, tasks: tasks.sort((a,b)=>a.time.localeCompare(b.time))});
+        }
+        renderSummary();
+      });
+
+      downloadCsvBtn.addEventListener('click', downloadCSV);
+      resetBtn.addEventListener('click', () => { if (confirm("Reset schedule?")) { schedule = []; renderSummary(); }});
+
+      createIssuesBtn.addEventListener('click', () => {
+        if (!confirm("This will create GitHub issues in the target repo (one issue per task). Continue?")) return;
+        createGitHubIssues();
+      });
+
+      // initial render
+      renderSummary();
+    })();
+  </script>
+</body>
+</html>
